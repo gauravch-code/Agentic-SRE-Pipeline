@@ -1,0 +1,14 @@
+FROM golang:alpine
+WORKDIR /app
+
+# Copy the Go module files first (to download the k8s puzzle pieces!)
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy your new in-cluster code
+COPY incluster.go metrics.go ./
+
+# Compile the in-cluster code
+RUN go build -o agent incluster.go metrics.go
+
+CMD ["./agent"]

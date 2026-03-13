@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sre-agent-deployment
+spec:
+  replicas: 2 
+  selector:
+    matchLabels:
+      app: sre-agent
+  template:
+    metadata:
+      labels:
+        app: sre-agent
+    spec:
+      # THE ID BADGE: This tells K8s to mount the secure token into these pods
+      serviceAccountName: sre-agent-sa 
+      containers:
+      - name: agent-container
+        # THE NEW IMAGE: Pointing to the code you just compiled
+        image: incluster-agent:latest 
+        imagePullPolicy: Never
