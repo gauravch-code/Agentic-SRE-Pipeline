@@ -18,7 +18,10 @@ metadata:
 rules:
 - apiGroups: [""] # "" indicates the core API group
   resources: ["pods"]
-  verbs: ["get", "watch", "list"] # CRITICAL: Notice we did NOT give it "delete" permission here!
+  verbs: ["get", "watch", "list"] # CRITICAL: Notice we did NOT give it "delete" permission here!-
+- apiGroups: ["apps"] # 🚨 NEW: Access to Deployments
+  resources: ["deployments"]
+  verbs: ["get", "patch", "update"]
 
 ---
 # 3. THE STAPLER (RoleBinding)
