@@ -17,7 +17,7 @@ metadata:
   namespace: default
 rules:
 - apiGroups: [""] # "" indicates the core API group
-  resources: ["pods"]
+  resources: ["pods", "pods/log"]
   verbs: ["get", "watch", "list"] # CRITICAL: Notice we did NOT give it "delete" permission here!-
 - apiGroups: ["apps"] # 🚨 NEW: Access to Deployments
   resources: ["deployments"]

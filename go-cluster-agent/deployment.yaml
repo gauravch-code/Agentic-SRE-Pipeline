@@ -3,7 +3,8 @@ kind: Deployment
 metadata:
   name: sre-agent-deployment
 spec:
-  replicas: 2 
+  revisionHistoryLimit: 3
+  replicas: 1
   selector:
     matchLabels:
       app: sre-agent
@@ -12,10 +13,14 @@ spec:
       labels:
         app: sre-agent
     spec:
-      # THE ID BADGE: This tells K8s to mount the secure token into these pods
       serviceAccountName: sre-agent-sa 
       containers:
       - name: agent-container
-        # THE NEW IMAGE: Pointing to the code you just compiled
+        # THE NEW IMAGE: Using your local compiled image
         image: incluster-agent:latest 
         imagePullPolicy: Never
+        resources:
+          limits:
+            memory: "10Mi"     # deliberately tiny so the pod lives near its ceiling
+          requests:
+            memory: "8Mi"

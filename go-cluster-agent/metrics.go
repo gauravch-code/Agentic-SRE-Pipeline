@@ -8,118 +8,118 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
+	"time"
 )
 
-// 1. THE JSON BLUEPRINT
-// Prometheus returns a deeply nested JSON object.
-// We create Go structs so the compiler knows exactly how to read it.
 type PromResponse struct {
 	Data struct {
 		Result []struct {
 			Metric map[string]string `json:"metric"`
-			Value  []interface{}     `json:"value"` // The actual metric value is hidden here
+			Value  []interface{}     `json:"value"`
 		} `json:"result"`
 	} `json:"data"`
 }
 
-// 2. THE FETCH FUNCTION
+var (
+	lastAlertTime = make(map[string]time.Time)
+	mapMutex      = &sync.Mutex{}
+)
+
 func fetchPodMemory() {
-	fmt.Println("🔍 Reaching out to Prometheus...")
+	fmt.Println("🔍 Querying Prometheus for memory metrics...")
 
-	// The exact PromQL query we tested in the browser
-	promQL := `sum(container_memory_working_set_bytes{namespace="default", pod=~"sre-agent-deployment.*"}) by (pod)`
+	// Query 1: Current memory usage per pod
+	usageQL := `sum by (pod) (
+    container_memory_working_set_bytes{namespace="default", pod=~"sre-agent-deployment.*"}
+    and on (pod) (time() - timestamp(kube_pod_info{namespace="default", pod=~"sre-agent-deployment.*"})) < 30
+)`
 
-	// URL-encode the query so it can be sent over HTTP
+	// Query 2: Memory limits per pod (set in deployment spec)
+	limitsQL := `sum by (pod) (
+    kube_pod_container_resource_limits{namespace="default", pod=~"sre-agent-deployment.*", resource="memory"}
+)`
+
+	usageData := queryPrometheus(usageQL)
+	limitsData := queryPrometheus(limitsQL)
+
+	if usageData == nil || limitsData == nil {
+		return
+	}
+
+	// Build a map of pod -> limit bytes
+	limitMap := make(map[string]int)
+	for _, result := range limitsData.Data.Result {
+		podName := result.Metric["pod"]
+		limitStr := fmt.Sprintf("%v", result.Value[1])
+		limitInt, _ := strconv.Atoi(limitStr)
+		limitMap[podName] = limitInt
+	}
+
+	for _, result := range usageData.Data.Result {
+		podName := result.Metric["pod"]
+		memStr := fmt.Sprintf("%v", result.Value[1])
+		memInt, _ := strconv.Atoi(memStr)
+
+		limitInt, hasLimit := limitMap[podName]
+		if !hasLimit || limitInt == 0 {
+			fmt.Printf("⚠️ No limit found for pod %s, skipping\n", podName)
+			continue
+		}
+
+		percentage := float64(memInt) / float64(limitInt) * 100
+
+		// Only alert when usage exceeds 80% of the limit
+		if percentage > 80.0 {
+			fmt.Printf("⚠️ WARNING: Pod %s is at %.1f%% memory (%d / %d bytes)\n",
+				podName, percentage, memInt, limitInt)
+
+			mapMutex.Lock()
+			lastTime, exists := lastAlertTime[podName]
+
+			if exists && time.Since(lastTime) < 30*time.Second {
+				fmt.Printf("Cooldown active for %s\n", podName)
+				mapMutex.Unlock()
+				continue
+			}
+
+			lastAlertTime[podName] = time.Now()
+			mapMutex.Unlock()
+
+			go func(pName string) {
+				jsonPayload, _ := json.Marshal(map[string]string{
+					"pod_name": pName,
+					"alert":    "OOM_RISK",
+				})
+
+				alertURL := "http://host.docker.internal:5055/alert"
+				fmt.Printf("Firing tripwire for %s...\n", pName)
+				resp, err := http.Post(alertURL, "application/json", bytes.NewBuffer(jsonPayload))
+				if err != nil {
+					fmt.Printf("Failed to reach AI Orchestrator: %v\n", err)
+				} else {
+					fmt.Printf("Alert sent. Status: %s\n", resp.Status)
+					resp.Body.Close()
+				}
+			}(podName)
+		}
+	}
+}
+
+// queryPrometheus is a helper that executes a PromQL query and returns the parsed response
+func queryPrometheus(promQL string) *PromResponse {
 	encodedQuery := url.QueryEscape(promQL)
-
-	// The internal Kubernetes DNS address for your Prometheus server
 	promURL := fmt.Sprintf("http://local-prom-prometheus-server.default.svc.cluster.local:80/api/v1/query?query=%s", encodedQuery)
 
-	// 3. THE HTTP REQUEST
-	// TODO: Use http.Get(promURL) to send the request
-	// resp, err := ...
 	resp, err := http.Get(promURL)
 	if err != nil {
 		fmt.Printf("Failed to reach Prometheus: %v\n", err)
-		return
+		return nil
 	}
 	defer resp.Body.Close()
 
-	// if err != nil {
-	// 	fmt.Printf("❌ Failed to reach Prometheus: %v\n", err)
-	// 	return
-	// }
-	// defer resp.Body.Close()
-
-	// 4. PARSING THE RESPONSE
-	// body, _ := io.ReadAll(resp.Body)
-	// var promData PromResponse
 	body, _ := io.ReadAll(resp.Body)
 	var promData PromResponse
-	err = json.Unmarshal(body, &promData)
-
-	// TODO: Use json.Unmarshal to translate the raw 'body' bytes into the 'promData' struct
-	// err = ...
-	if err != nil {
-		fmt.Printf("Failed to parse JSON: %v\n", err)
-		return
-	}
-	// if err != nil {
-	// 	fmt.Printf("❌ Failed to parse JSON: %v\n", err)
-	// 	return
-	// }
-
-	// 5. PRINTING THE RESULTS
-	// for _, result := range promData.Data.Result {
-	// 	podName := result.Metric["pod"]
-	// 	memoryUsage := result.Value[1] // The value is the 2nd item in the array
-	// 	fmt.Printf("📊 Pod: %s | Memory: %v bytes\n", podName, memoryUsage)
-	// }
-
-	// 5. PRINTING AND EVALUATING THE RESULTS
-	for _, result := range promData.Data.Result {
-		podName := result.Metric["pod"]
-
-		// 1. Extract the memory value as a string, then convert to an integer
-		memStr := fmt.Sprintf("%v", result.Value[1])
-
-		// You will need to add "strconv" to your import list at the top of the file!
-		memInt, _ := strconv.Atoi(memStr)
-
-		// ==========================================
-		// 🚨 YOUR CHALLENGE: WRITE THE LOGIC HERE
-		// ==========================================
-		// Write an if/else statement:
-		// IF memInt is strictly greater than 8000000 (8 Megabytes):
-		//    Print: "⚠️ WARNING: Pod [podName] is using high memory! ([memInt] bytes)"
-		// ELSE:
-		//    Print: "✅ Pod [podName] memory is stable at [memInt] bytes."
-		// ==========================================
-
-		if memInt > 8000000 {
-			fmt.Printf("WARNING: Pod %v is using high memory!(%v bytes)\n", podName, memInt)
-
-			// ==========================================
-			// 🚨 NEW: THE WEBHOOK TO PYTHON
-			// ==========================================
-			// 1. Format the data as a JSON string
-			jsonPayload := []byte(fmt.Sprintf(`{"pod_name": "%s", "memory_bytes": %d}`, podName, memInt))
-
-			// 2. Fire the alert out of the cluster to your Windows machine on Port 5000
-			alertURL := "http://host.docker.internal:5000/alert"
-			resp, err := http.Post(alertURL, "application/json", bytes.NewBuffer(jsonPayload))
-
-			if err != nil {
-				fmt.Printf("❌ Failed to reach AI Orchestrator: %v\n", err)
-			} else {
-				fmt.Println("🚀 Alert successfully fired to Python AI!")
-				resp.Body.Close()
-			}
-			// ==========================================
-
-		} else {
-			fmt.Printf("Pod: %v memory is stable at %v bytes.\n", podName, memInt)
-		}
-
-	}
+	json.Unmarshal(body, &promData)
+	return &promData
 }
