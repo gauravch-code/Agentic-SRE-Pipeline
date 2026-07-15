@@ -102,7 +102,7 @@ No more alerts
 ## 📁 Project Structure
 
 ```
-Agenti-SRE-Pipeline/
+Agentic-SRE-Pipeline/
 │
 ├── go-cluster-agent/
 │   ├── incluster.go       # Main loop — runs inside K8s, lists pods, triggers metrics
